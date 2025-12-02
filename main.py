@@ -194,18 +194,27 @@ def get_historical_data():
     trades = historical_client.get_stock_trades(trade_request_params)
 
     for stock in stock_list:
+        db_rows = {}
+
         # BAR DATA
-        print(f'## BAR DATA FOR: {stock}')
-        print(bars[stock])
+        bar_df = convert_data(stock, bars.data.get(stock), 'bar')
+        if bar_df is not None:
+            minute_bars = bar_df.resample('1min').agg({'open':'first','high':'max','low':'min','close':'last'})
+            print(f'## HISTORICAL BAR DATA FOR: {stock}')
+            for ts, row in minute_bars.dropna().iterrows():
+                print(f'{stock} - {ts}: O:{row["open"]} H:{row["high"]} L:{row["low"]} C:{row["close"]}')
+                db_rows[ts] = {"stock": stock, "timestamp": ts, "open": row["open"], "high": row["high"], "low": row["low"], "close": row["close"]}
 
         # QUOTES DATA
-        db_rows = {}
         quote_df = convert_data(stock, quotes.data.get(stock), 'quote')
         minute_summary = quote_df['ask_price'].resample('1min').mean()
         print(f'## HISTORICAL QUOTE DATA FOR: {stock}')
         for ts, ask in minute_summary.dropna().items():
             print(f'{stock} - {ts}: {ask}') 
-            db_rows[ts] = ({"stock": stock, "timestamp": ts, "quote": ask})
+            if ts in db_rows:
+                db_rows[ts]["quote"] = ask
+            else:
+                db_rows[ts] = {"stock": stock, "timestamp": ts, "quote": ask}
 
         # TRADES DATA
         trade_df = convert_data(stock, trades.data.get(stock), 'trade')
