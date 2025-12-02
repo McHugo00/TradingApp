@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -293,7 +293,7 @@ def EnrichIndicators():
 def get_historical_data():
     stock_list = get_stock_list()
     print(stock_list)
-    current_datetime = datetime.now()
+    current_datetime = datetime.now(timezone.utc)
     thirty_days_ago = current_datetime - timedelta(days=1)
 
     bar_request_params = StockBarsRequest(
