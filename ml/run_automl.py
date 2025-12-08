@@ -409,13 +409,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Build validation strategy
     validation_strategy = None
     tr = max(0.5, min(float(args.train_ratio), 0.95))
+    # mljar-supervised doesn't support 'time' validation in the current version; fallback to 'split'
     if args.validation_type == "auto":
         if args.predict_next or ("t" in df.columns):
-            validation_strategy = {"validation_type": "time", "train_ratio": tr}
+            print("[mljar] Using split validation (fallback from time) for time-ordered data")
+            validation_strategy = {"validation_type": "split", "train_ratio": tr}
         else:
             validation_strategy = {"validation_type": "split", "train_ratio": tr}
     elif args.validation_type == "time":
-        validation_strategy = {"validation_type": "time", "train_ratio": tr}
+        print("[mljar] validation_type 'time' not supported; falling back to 'split'")
+        validation_strategy = {"validation_type": "split", "train_ratio": tr}
     elif args.validation_type == "split":
         validation_strategy = {"validation_type": "split", "train_ratio": tr}
     elif args.validation_type == "kfold":
