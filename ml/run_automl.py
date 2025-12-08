@@ -165,7 +165,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="If set, will add {'symbol': SYMBOL} to the MongoDB query (uppercased).",
     )
 
-    p.add_argument("--target", required=True, help="Target column name.")
+    p.add_argument("--target", default="ClosePrice", help="Target column name (default: ClosePrice).")
     p.add_argument(
         "--drop-columns",
         help="Comma-separated list of columns to drop before training.",
@@ -229,7 +229,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def load_dataframe(args: argparse.Namespace) -> pd.DataFrame:
     has_csv = bool(args.input_csv)
-    has_mongo = bool(args.mongo_collection)
+    has_mongo = bool(args.mongo_collection or args.collection)
 
     if has_csv == has_mongo:
         # Either both set or neither set
@@ -237,6 +237,12 @@ def load_dataframe(args: argparse.Namespace) -> pd.DataFrame:
 
     if has_csv:
         df = _load_from_csv(args.input_csv)
+        if args.symbol and "symbol" in df.columns:
+            sym = str(args.symbol).strip().upper()
+            df["symbol"] = df["symbol"].astype(str).str.upper()
+            df = df[df["symbol"] == sym]
+            if df.empty:
+                raise SystemExit(f"No rows found in CSV after filtering for symbol '{sym}'")
     else:
         base_query = _maybe_str_to_json(args.mongo_query) or {}
         if args.symbol:
@@ -253,7 +259,9 @@ def load_dataframe(args: argparse.Namespace) -> pd.DataFrame:
             limit=args.mongo_limit,
         )
 
-    drops = _comma_list(args.drop_columns)
+    drops = _comma_list(args.drop_columns) or []
+    if args.symbol and "symbol" in df.columns:
+        drops = list(set(list(drops) + ["symbol"]))
     if drops:
         existing = [c for c in drops if c in df.columns]
         if existing:
