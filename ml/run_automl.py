@@ -369,13 +369,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         source_collection = args.mongo_collection or args.collection or "csv"
         out_collection = args.output_collection or "prediction"
         if sym and 't_test' in locals():
-            times = pd.to_datetime(pd.Series(t_test), utc=True, errors='coerce').dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+            times_iso = (
+                pd.to_datetime(pd.Series(t_test), utc=True, errors='coerce')
+                .dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                .tolist()
+            )
+            # Flatten predictions to a 1D list
+            preds_list = preds.tolist() if hasattr(preds, "tolist") else list(preds)
             client = _connect_mongo()
             db_name = args.mongo_db or os.getenv("MONGODB_DB") or "TradingApp"
             out_col = client[db_name][out_collection]
             saved = 0
-            for iso in times:
+            for iso, pred in zip(times_iso, preds_list):
                 if not isinstance(iso, str) or not iso:
+                    continue
+                # Ensure scalar prediction value
+                if isinstance(pred, (list, tuple)):
+                    pred_val = pred[0] if len(pred) > 0 else None
+                else:
+                    try:
+                        pred_val = float(pred)
+                    except Exception:
+                        pred_val = None
+                if pred_val is None:
                     continue
                 out_col.update_one(
                     {"symbol": sym, "collection": source_collection, "expectedtime": iso},
@@ -384,6 +400,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "collection": source_collection,
                         "expectedtime": iso,
                         "confidence": confidence,
+                        args.target: pred_val,
                     }},
                     upsert=True,
                 )
