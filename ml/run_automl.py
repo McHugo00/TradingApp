@@ -322,12 +322,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             step = None
         if not isinstance(step, pd.Timedelta) or pd.isna(step) or step == pd.Timedelta(0):
             step = pd.Timedelta(days=1)
-        last_time = df[detected_time_col].iloc[-2]
+        last_time = df[detected_time_col].iloc[-1]
         expectedtime_iso = (last_time + step).strftime("%Y-%m-%dT%H:%M:%SZ")
-        # Build X_next from the last available feature row (index -2)
+        # Build X_next from the last available feature row (index -1)
         drop_cols_for_next = [args.target, target_name, detected_time_col]
         feature_cols = [c for c in df.columns if c not in drop_cols_for_next]
-        X_next = df.iloc[[-2]][feature_cols]
+        X_next = df.iloc[[-1]][feature_cols]
         # Drop last row (NaN shifted target) and rename shifted target to original target for training
         df = df.iloc[:-1].rename(columns={target_name: args.target})
     # Keep time series for potential splitting (non next-step path)
@@ -415,10 +415,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"[mljar] Holdout accuracy: {acc:.4f}")
         else:
             from sklearn.metrics import r2_score
+            import numpy as np
 
-            r2 = r2_score(y_test, preds)
-            confidence = float(r2)
-            print(f"[mljar] Holdout R^2: {r2:.4f}")
+            y_true_np = np.asarray(y_test).astype(float).reshape(-1)
+            preds_np = np.asarray(preds).astype(float).reshape(-1)
+            m = min(len(y_true_np), len(preds_np))
+            if m > 1:
+                r2 = r2_score(y_true_np[:m], preds_np[:m])
+                confidence = float(r2)
+                print(f"[mljar] Holdout R^2: {r2:.4f}")
+            else:
+                print("[mljar] Not enough samples to compute R^2")
     except Exception as e:
         print(f"[mljar] Skipping quick metric computation due to: {e}")
 
