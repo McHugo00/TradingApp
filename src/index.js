@@ -5,7 +5,6 @@ import { settings } from './config.js';
 import Alpaca from '@alpacahq/alpaca-trade-api';
 import { getCurrentClock, getTradingCalendar } from './alpacaHelpers.js';
 import { syncBars } from './syncBars.js';
-import { syncPortfolioHistory } from './portfolioHistory.js';
 import { syncPositions } from './positions.js';
 import { syncQuotes } from './syncQuotes.js';
 import { syncTrades } from './syncTrades.js';
@@ -317,22 +316,6 @@ async function main() {
     console.warn('enrichIndicators on startup failed:', e && e.message ? e.message : e);
   }
 
-  // Sync portfolio history on startup (for portfolio dashboard)
-  try {
-    if (alpacaClient) {
-      await syncPortfolioHistory(alpacaClient, db, {
-        period: '1D',
-        timeframe: '1Min',
-        extended_hours: true,
-        paper: settings.isPaper
-      });
-      console.log('syncPortfolioHistory completed on startup');
-    } else {
-      console.warn('Skipping syncPortfolioHistory: missing Alpaca credentials');
-    }
-  } catch (e) {
-    console.warn('syncPortfolioHistory on startup failed:', e && e.message ? e.message : e);
-  }
 
   // Sync positions on startup (current + historical snapshot)
   try {
@@ -411,17 +394,6 @@ async function main() {
       }, 15000);
     } catch (_) {}
 
-    // Portfolio history: every 60s (existing behavior)
-    try {
-      timers.port = setInterval(() => {
-        syncPortfolioHistory(alpacaClient, db, {
-          period: '1D',
-          timeframe: '1Min',
-          extended_hours: true,
-          paper: settings.isPaper
-        }).catch(() => {});
-      }, 60000);
-    } catch (_) {}
 
     // Bars every 2 minutes, followed by enrichIndicators
     try {
@@ -494,7 +466,6 @@ async function main() {
     schedules: alpacaClient
       ? [
           { name: 'positions', interval_ms: 15000 },
-          { name: 'portfolio_history', interval_ms: 60000 },
           { name: 'bars+enrichIndicators', interval_ms: 120000 },
           { name: 'quotes+trades+buildSnapshots1m', interval_ms: 180000 },
           { name: 'orders', interval_ms: 15000 }
@@ -522,7 +493,6 @@ async function main() {
     console.log('Shutting down...');
     try {
       if (timers && timers.pos) clearInterval(timers.pos);
-      if (timers && timers.port) clearInterval(timers.port);
       if (timers && timers.bars) clearInterval(timers.bars);
       if (timers && timers.quotes) clearInterval(timers.quotes);
       if (timers && timers.trades) clearInterval(timers.trades);
