@@ -289,7 +289,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     results_path = _ensure_results_path(args.results_path)
 
     df = load_dataframe(args)
-    # Determine time column: prefer --time-column; fallback to common names incl. 't' and 'Timestamp'
+    # Determine time column: prefer --time-column; fallback to common names, then normalize to canonical 't'
     preferred_time_col = args.time_column
     detected_time_col = None
     if preferred_time_col and preferred_time_col in df.columns:
@@ -299,13 +299,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             if cand in df.columns:
                 detected_time_col = cand
                 break
-    # Coerce to timezone-aware datetime and sort ascending when time column is present
+    # Normalize time column to 't', coerce to tz-aware datetime, and sort ascending (past -> present)
     expectedtime_iso = None
     X_next = None
+    original_time_col = None
     if detected_time_col:
-        df[detected_time_col] = pd.to_datetime(df[detected_time_col], utc=True, errors="coerce")
-        df = df.sort_values(detected_time_col).reset_index(drop=True)
-        print(f"[mljar] Using time column: {detected_time_col}")
+        original_time_col = detected_time_col
+        df["t"] = pd.to_datetime(df[detected_time_col], utc=True, errors="coerce")
+        df = df.sort_values("t").reset_index(drop=True)
+        if detected_time_col != "t":
+            print(f"[mljar] Using time column: t (normalized from {detected_time_col})")
+        else:
+            print(f"[mljar] Using time column: t")
+    else:
+        print("[mljar] Warning: No time column found. Provide one via --time-column (e.g., 't').")
     # If next-step forecasting is requested, shift target and prepare next-step features
     if getattr(args, "predict_next", False):
         if not detected_time_col:
@@ -315,27 +322,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         if len(df) < 2:
             raise SystemExit("Not enough rows to compute next-step prediction")
         # Compute expected time for next bar: last observed time + median interval (fallback 1 day)
-        time_diffs = df[detected_time_col].diff()
+        time_diffs = df["t"].diff()
         try:
             step = time_diffs.median()
         except Exception:
             step = None
         if not isinstance(step, pd.Timedelta) or pd.isna(step) or step == pd.Timedelta(0):
             step = pd.Timedelta(days=1)
-        last_time = df[detected_time_col].iloc[-1]
+        last_time = df["t"].iloc[-1]
         expectedtime_iso = (last_time + step).strftime("%Y-%m-%dT%H:%M:%SZ")
         # Build X_next from the last available feature row (index -1)
-        drop_cols_for_next = [args.target, target_name, detected_time_col]
+        drop_cols_for_next = [args.target, target_name, "t"] + (
+            [original_time_col] if original_time_col and original_time_col != "t" else []
+        )
         feature_cols = [c for c in df.columns if c not in drop_cols_for_next]
         X_next = df.iloc[[-1]][feature_cols]
         # Drop last row (NaN shifted target) and rename shifted target to original target for training
         df = df.iloc[:-1].rename(columns={target_name: args.target})
     # Keep time series for potential splitting (non next-step path)
-    times_series = df[detected_time_col] if detected_time_col else None
+    times_series = df["t"] if "t" in df.columns else None
     # Split X and y
     X, y = _split_xy(df, args.target)
-    if detected_time_col and detected_time_col in X.columns:
-        X = X.drop(columns=[detected_time_col])
+    # Drop time columns from features to prevent leakage
+    drop_time_cols = []
+    if "t" in X.columns:
+        drop_time_cols.append("t")
+    if original_time_col and original_time_col in X.columns:
+        drop_time_cols.append(original_time_col)
+    if drop_time_cols:
+        X = X.drop(columns=drop_time_cols)
     task_hint = _detect_task(y)
 
     # Stratify only for classification
