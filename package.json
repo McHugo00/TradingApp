@@ -21,8 +21,8 @@
   },
   "overrides": {
     "@alpacahq/alpaca-trade-api": {
-      "axios": "1.11.0"
+      "axios": "1.12.0"
     },
-    "axios": "1.11.0"
+    "axios": "1.12.0"
   }
 }
