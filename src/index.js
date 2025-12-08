@@ -1,8 +1,7 @@
 import express from 'express';
-import apiRouter, { setManager } from './api.js';
+import apiRouter from './api.js';
 import { connectDb, closeDb, getDb } from './db.js';
 import { settings } from './config.js';
-import AlpacaStreamManager from './streaming.js';
 import Alpaca from '@alpacahq/alpaca-trade-api';
 import { getCurrentClock, getTradingCalendar } from './alpacaHelpers.js';
 import { syncBars } from './syncBars.js';
@@ -16,31 +15,7 @@ import { buildSnapshots1m } from './jobs/buildSnapshots1m.js';
 import { enrichIndicators } from './jobs/enrichIndicators.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8000;
-// STREAMING_ENABLED flag: set to 0/false/off/no to disable streaming (default enabled)
-const STREAMING_ENABLED = !['0', 'false', 'off', 'no'].includes(
-  String(process.env.STREAMING_ENABLED || '1').toLowerCase()
-);
 
-// Global safety: swallow known transient WebSocket errors from SDK during connect
-process.on('uncaughtException', (err) => {
-  const msg = (err && err.message) ? err.message : String(err);
-  if (msg.includes('WebSocket is not open') && msg.includes('readyState 0')) {
-    console.warn('Suppressed uncaughtException:', msg);
-    return;
-  }
-  console.error('Uncaught exception:', err);
-  process.exit(1);
-});
-
-process.on('unhandledRejection', (reason) => {
-  const msg = (reason && reason.message) ? reason.message : String(reason);
-  if (msg.includes('WebSocket is not open') && msg.includes('readyState 0')) {
-    console.warn('Suppressed unhandledRejection:', msg);
-    return;
-  }
-  console.error('Unhandled rejection:', reason);
-  process.exit(1);
-});
 
 async function main() {
   await connectDb();
@@ -510,10 +485,9 @@ async function main() {
     port: PORT,
     paper: settings.isPaper,
     data_feed: settings.alpacaDataFeed,
-    streaming_enabled: STREAMING_ENABLED,
     clock,
     calendar,
-    module: 'streaming',
+    module: 'server',
     symbols: settings.symbols || [],
     symbols_count: (settings.symbols || []).length,
     has_apca_credentials: Boolean(settings.apcaApiKeyId && settings.apcaApiSecretKey),
@@ -535,21 +509,6 @@ async function main() {
     console.error('Failed to log startup event:', e);
   }
 
-  // Auto-start streaming manager (respect STREAMING_ENABLED flag)
-  let streamManager = null;
-  if (STREAMING_ENABLED) {
-    streamManager = new AlpacaStreamManager(settings, db);
-    setManager(streamManager);
-    try {
-      await streamManager.start();
-      console.log('Streaming auto-started');
-    } catch (e) {
-      console.error('Failed to auto-start streaming:', e && e.message ? e.message : e);
-    }
-  } else {
-    console.log('Streaming disabled via STREAMING_ENABLED env flag');
-    try { setManager(null); } catch (_) {}
-  }
 
   const app = express();
   app.use(express.json());
@@ -568,9 +527,6 @@ async function main() {
       if (timers && timers.quotes) clearInterval(timers.quotes);
       if (timers && timers.trades) clearInterval(timers.trades);
       if (timers && timers.orders) clearInterval(timers.orders);
-      if (streamManager && typeof streamManager.stop === 'function') {
-        await streamManager.stop();
-      }
       await closeDb();
     } finally {
       server.close(() => process.exit(0));

@@ -1,44 +1,14 @@
 import express from 'express';
-import { settings } from './config.js';
 import { getDb } from './db.js';
-import AlpacaStreamManager from './streaming.js';
 const router = express.Router();
 
-let manager = null;
-
-async function getManager() {
-  if (!manager) {
-    const db = await getDb();
-    manager = new AlpacaStreamManager(settings, db);
-  }
-  return manager;
-}
-
-export function setManager(m) {
-  manager = m;
-  return manager;
-}
 
 router.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-router.get('/status', async (req, res) => {
-  const m = await getManager();
-  res.json(m.getStatus());
-});
 
-router.post('/start', async (req, res) => {
-  const m = await getManager();
-  await m.start();
-  res.json(m.getStatus());
-});
 
-router.post('/stop', async (req, res) => {
-  const m = await getManager();
-  await m.stop();
-  res.json(m.getStatus());
-});
 
 /**
  * GET /health/db
@@ -100,13 +70,5 @@ router.post('/debug/sentinel', async (req, res) => {
   }
 });
 
-/**
- * GET /stream-stats
- * Returns streaming status with counters.
- */
-router.get('/stream-stats', async (req, res) => {
-  const m = await getManager();
-  res.json(m.getStatus());
-});
 
 export default router;
