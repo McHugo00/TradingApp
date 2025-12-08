@@ -291,11 +291,15 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     algorithms = _comma_list(args.algorithms)
 
+    # Select a default evaluation metric if none provided.
+    # For ClosePrice regression we default to RMSE; for classification we use logloss.
+    eval_metric = args.eval_metric or ("rmse" if "regression" in task_hint else "logloss")
+
     automl_kwargs = dict(
         mode=args.mode,
         total_time_limit=args.time_limit,
         results_path=results_path,
-        eval_metric=args.eval_metric,
+        eval_metric=eval_metric,
         explain_level=args.explain_level,
         random_state=args.random_state,
         verbose=args.verbose,
