@@ -156,6 +156,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         type=int,
         help="Limit documents loaded from MongoDB.",
     )
+    src.add_argument(
+        "--collection",
+        help="Alias for --mongo-collection. If both provided, --mongo-collection wins.",
+    )
+    src.add_argument(
+        "--symbol",
+        help="If set, will add {'symbol': SYMBOL} to the MongoDB query (uppercased).",
+    )
 
     p.add_argument("--target", required=True, help="Target column name.")
     p.add_argument(
@@ -230,12 +238,17 @@ def load_dataframe(args: argparse.Namespace) -> pd.DataFrame:
     if has_csv:
         df = _load_from_csv(args.input_csv)
     else:
-        query = _maybe_str_to_json(args.mongo_query)
+        base_query = _maybe_str_to_json(args.mongo_query) or {}
+        if args.symbol:
+            base_query = {**base_query, "symbol": str(args.symbol).strip().upper()}
         projection = _maybe_str_to_json(args.mongo_projection)
+        coll = args.mongo_collection or args.collection
+        if not coll:
+            raise SystemExit("Please provide --mongo-collection or --collection for MongoDB source")
         df = _load_from_mongo(
-            collection=args.mongo_collection,
+            collection=coll,
             database=args.mongo_db,
-            query=query,
+            query=base_query or None,
             projection=projection,
             limit=args.mongo_limit,
         )
