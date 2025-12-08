@@ -284,20 +284,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     results_path = _ensure_results_path(args.results_path)
 
     df = load_dataframe(args)
-    # Determine time column: prefer --time-column; fallback to common names like 'Timestamp'
+    # Determine time column: prefer --time-column; fallback to common names incl. 't' and 'Timestamp'
     preferred_time_col = args.time_column
     detected_time_col = None
     if preferred_time_col and preferred_time_col in df.columns:
         detected_time_col = preferred_time_col
     else:
-        for cand in ["Timestamp", "timestamp", "time", "date", "datetime", "Datetime", "ts", "t"]:
+        for cand in ["t", "Timestamp", "timestamp", "time", "date", "datetime", "Datetime", "ts"]:
             if cand in df.columns:
                 detected_time_col = cand
                 break
-    times_series = df[detected_time_col] if detected_time_col else None
+    times_series = None
+    if detected_time_col:
+        # Coerce to timezone-aware datetime; keep a parallel series for expectedtime
+        times_series = pd.to_datetime(df[detected_time_col], utc=True, errors="coerce")
     X, y = _split_xy(df, args.target)
     if detected_time_col and detected_time_col in X.columns:
         X = X.drop(columns=[detected_time_col])
+    if detected_time_col:
+        print(f"[mljar] Using time column: {detected_time_col}")
     task_hint = _detect_task(y)
 
     # Stratify only for classification
