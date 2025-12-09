@@ -717,6 +717,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         db_name = args.mongo_db or os.getenv("MONGODB_DB") or "TradingApp"
         out_col = client[db_name][out_collection]
 
+        created_at_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         if getattr(args, "predict_next", False):
             if not sym or not expectedtime_iso or next_pred is None:
                 print("[mljar] Skipping MongoDB save: missing symbol, expected time, or next prediction")
@@ -727,6 +728,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "symbol": sym,
                         "collection": source_collection,
                         "expectedtime": expectedtime_iso,
+                        "created_at": created_at_iso,
                         "rmse": rmse,
                         args.target: float(next_pred),
                     }},
@@ -764,6 +766,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                             "symbol": sym,
                             "collection": source_collection,
                             "expectedtime": latest_iso,
+                            "created_at": created_at_iso,
                             "rmse": rmse,
                             args.target: latest_pred,
                         }},
