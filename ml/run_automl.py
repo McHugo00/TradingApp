@@ -32,11 +32,12 @@ def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
 
 
-def _ensure_results_path(path: Optional[str]) -> str:
+def _ensure_results_path(path: Optional[str], default_name: Optional[str] = None) -> str:
     if path:
         rp = os.path.abspath(path)
     else:
-        rp = os.path.abspath(os.path.join("ml", "outputs", _timestamp()))
+        name = default_name or _timestamp()
+        rp = os.path.abspath(os.path.join("ml", "outputs", name))
     os.makedirs(rp, exist_ok=True)
     return rp
 
@@ -449,7 +450,11 @@ def load_dataframe(args: argparse.Namespace) -> pd.DataFrame:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
-    results_path = _ensure_results_path(args.results_path)
+    # Build a stable default output folder name like SYMBOL_COLLECTION for re-use
+    sym_for_name = str(args.symbol).strip().upper() if args.symbol else None
+    coll_for_name = args.mongo_collection or args.collection
+    default_name = f"{sym_for_name}_{coll_for_name}" if sym_for_name and coll_for_name else None
+    results_path = _ensure_results_path(args.results_path, default_name)
 
     df = load_dataframe(args)
     # Determine time column: prefer --time-column; fallback to common names, then normalize to canonical 't'
@@ -643,7 +648,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     automl = AutoML(**automl_kwargs)
 
     print(f"[mljar] Starting AutoML in mode={automl_kwargs.get('mode')} time_limit={args.time_limit}s")
-    print(f"[mljar] Results path: {results_path}")
+    print(f"[mljar] Results path: {results_path}" + (f" [{default_name}]" if default_name else ""))
     print(f"[mljar] Detected task hint: {task_hint}")
 
     automl.fit(X_train, y_train)
