@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Tuple
 
 import pandas as pd
+import numpy as np
 from sklearn.model_selection import train_test_split
 
 # Optional import: only needed when using --mongo-collection
@@ -205,6 +206,26 @@ def _featurize(
     return df
 
 
+def _apply_target_transform(kind: str, y: pd.Series, base: pd.Series) -> pd.Series:
+    kind = (kind or "none").lower()
+    if kind == "pct":
+        return (y.astype(float) / base.astype(float)) - 1.0
+    if kind == "log":
+        return np.log(y.astype(float) / base.astype(float))
+    return y
+
+
+def _invert_target_transform(kind: str, base: pd.Series, yhat) -> pd.Series:
+    kind = (kind or "none").lower()
+    yhat_s = pd.Series(yhat).astype(float)
+    base_s = pd.Series(base).astype(float)
+    if kind == "pct":
+        return base_s * (1.0 + yhat_s)
+    if kind == "log":
+        return base_s * np.exp(yhat_s)
+    return yhat_s
+
+
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Run AutoML with mljar-supervised on CSV or MongoDB data."
@@ -368,6 +389,19 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Enable training of ensembles in mljar (disabled by default).",
     )
+    p.add_argument(
+        "--target-transform",
+        choices=["auto", "none", "pct", "log"],
+        default="auto",
+        help="Transform target for modeling: 'pct' for percentage return, 'log' for log return, 'none' for raw. "
+             "'auto' uses 'log' when --predict-next, else 'none' (default: auto).",
+    )
+    p.add_argument(
+        "--clip-prediction-pct",
+        type=float,
+        default=0.0,
+        help="If > 0, clip next-step predicted price within +/- this percent of the last observed price (default: 0 - disabled).",
+    )
     return p.parse_args(argv)
 
 
@@ -457,7 +491,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not detected_time_col:
             raise SystemExit("--predict-next requires a time column in the data (e.g., 't' or 'Timestamp').")
         target_name = "TargetNext"
-        df[target_name] = df[args.target].shift(-1)
+        base_price_full = pd.to_numeric(df[args.target], errors="coerce")
+        df[target_name] = base_price_full.shift(-1)
         if len(df) < 2:
             raise SystemExit("Not enough rows to compute next-step prediction")
         # Compute expected time for next bar: last observed time + median interval (fallback 1 day)
@@ -476,9 +511,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         feature_cols = [c for c in df.columns if c not in drop_cols_for_next]
         X_next = df.iloc[[-1]][feature_cols]
+        last_base_price = float(base_price_full.iloc[-1]) if pd.notna(base_price_full.iloc[-1]) else None
         # Drop last row (NaN shifted target) and replace target with shifted target to avoid duplicate column names
         df = df.iloc[:-1].copy()
         df[args.target] = df[target_name]
+        # Keep aligned base and next-price series for transforms/metrics
+        base_series = base_price_full.iloc[:-1]
+        y_price_series = df[target_name].copy()
         df = df.drop(columns=[target_name])
     # Keep time series for potential splitting (non next-step path)
     times_series = df["t"] if "t" in df.columns else None
@@ -490,11 +529,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             y = y.iloc[:, 0]
         else:
             raise SystemExit(f"Target '{args.target}' produced multiple columns; please specify a single target column.")
+    # Determine target transform
+    transform_kind = getattr(args, "target_transform", "auto")
+    if transform_kind == "auto":
+        transform_kind = "log" if getattr(args, "predict_next", False) else "none"
+    # If predicting next-step, optionally transform the target into returns
+    if getattr(args, "predict_next", False) and transform_kind in ("pct", "log"):
+        if "base_series" not in locals():
+            raise SystemExit("Internal error: base_series not computed for target transform")
+        y = _apply_target_transform(transform_kind, y, base_series)
     # Drop rows where target is missing
     if y.isna().values.any():
-        notna_idx = ~y.isna().values
-        X = X.loc[notna_idx].reset_index(drop=True)
-        y = y.loc[notna_idx].reset_index(drop=True)
+        mask = ~y.isna().values
+        X = X.loc[mask].reset_index(drop=True)
+        y = y.loc[mask].reset_index(drop=True)
+        if getattr(args, "predict_next", False) and "base_series" in locals():
+            base_series = base_series[mask].reset_index(drop=True)
+            y_price_series = y_price_series[mask].reset_index(drop=True)
     # Drop time columns from features to prevent leakage
     drop_time_cols = []
     if "t" in X.columns:
@@ -514,8 +565,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             stratify = None
 
     if getattr(args, "predict_next", False):
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=args.test_size, random_state=args.random_state, shuffle=False
+        X_train, X_test, y_train, y_test, base_train, base_test, yprice_train, yprice_test = train_test_split(
+            X, y, base_series, y_price_series, test_size=args.test_size, random_state=args.random_state, shuffle=False
         )
     elif times_series is not None:
         # Preserve chronological order for time-series data; stratification is incompatible with shuffle=False
@@ -603,15 +654,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     next_pred = None
     if getattr(args, "predict_next", False) and 'X_next' in locals() and X_next is not None:
         try:
-            next_pred = float(automl.predict(X_next)[0])
-            print(f"[mljar] Next-step prediction: {args.target}={next_pred}")
+            raw_pred = float(automl.predict(X_next)[0])
+            # Invert transform to price if needed
+            if transform_kind in ("pct", "log"):
+                if 'last_base_price' in locals() and last_base_price is not None:
+                    next_pred = float(_invert_target_transform(transform_kind, pd.Series([last_base_price]), pd.Series([raw_pred])).iloc[0])
+                else:
+                    next_pred = None
+                    print("[mljar] Warning: Missing last_base_price; cannot invert transformed prediction to price")
+            else:
+                next_pred = raw_pred
+            # Optional clipping
+            clip_pct = float(getattr(args, "clip_prediction_pct", 0.0) or 0.0)
+            if next_pred is not None and clip_pct > 0 and 'last_base_price' in locals() and last_base_price is not None:
+                lower = last_base_price * (1.0 - clip_pct / 100.0)
+                upper = last_base_price * (1.0 + clip_pct / 100.0)
+                clipped = min(max(next_pred, lower), upper)
+                if clipped != next_pred:
+                    print(f"[mljar] Clipped next-step prediction from {next_pred:.6f} to {clipped:.6f} using ±{clip_pct:.2f}% band around {last_base_price:.6f}")
+                next_pred = clipped
+            if next_pred is not None:
+                print(f"[mljar] Next-step prediction: {args.target}={next_pred}")
         except Exception as e:
             print(f"[mljar] Failed to compute next-step prediction: {e}")
     # AutoML has built-in scoring in reports; optionally compute basic score if numeric
     confidence = None
     try:
-        import numpy as np
-
         if "classification" in task_hint:
             from sklearn.metrics import accuracy_score
 
@@ -625,17 +693,32 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"[mljar] Holdout accuracy: {acc:.4f}")
         else:
             from sklearn.metrics import r2_score
-            import numpy as np
 
-            y_true_np = np.asarray(y_test).astype(float).reshape(-1)
-            preds_np = np.asarray(preds).astype(float).reshape(-1)
-            m = min(len(y_true_np), len(preds_np))
-            if m > 1:
-                r2 = r2_score(y_true_np[:m], preds_np[:m])
-                confidence = float(r2)
-                print(f"[mljar] Holdout R^2: {r2:.4f}")
+            if getattr(args, "predict_next", False) and transform_kind in ("pct", "log"):
+                # Compute R^2 in both return space and price space
+                r2_ret = r2_score(np.asarray(y_test, dtype=float).reshape(-1), np.asarray(preds, dtype=float).reshape(-1))
+                preds_price = _invert_target_transform(transform_kind, pd.Series(yprice_test.index, dtype=float).map(lambda idx: base_test.loc[idx] if hasattr(base_test, "loc") else np.nan) if False else base_test, preds)
+                # Ensure alignment
+                y_true_price = pd.Series(yprice_test).astype(float).reset_index(drop=True)
+                preds_price = pd.Series(preds_price).astype(float).reset_index(drop=True)
+                m = min(len(y_true_price), len(preds_price))
+                if m > 1:
+                    r2_price = r2_score(y_true_price.iloc[:m], preds_price.iloc[:m])
+                    confidence = float(r2_price)
+                    print(f"[mljar] Holdout R^2 (returns): {r2_ret:.4f}")
+                    print(f"[mljar] Holdout R^2 (price):   {r2_price:.4f}")
+                else:
+                    print("[mljar] Not enough samples to compute R^2 in price space")
             else:
-                print("[mljar] Not enough samples to compute R^2")
+                y_true_np = np.asarray(y_test).astype(float).reshape(-1)
+                preds_np = np.asarray(preds).astype(float).reshape(-1)
+                m = min(len(y_true_np), len(preds_np))
+                if m > 1:
+                    r2 = r2_score(y_true_np[:m], preds_np[:m])
+                    confidence = float(r2)
+                    print(f"[mljar] Holdout R^2: {r2:.4f}")
+                else:
+                    print("[mljar] Not enough samples to compute R^2")
     except Exception as e:
         print(f"[mljar] Skipping quick metric computation due to: {e}")
 
