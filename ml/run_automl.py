@@ -476,8 +476,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         feature_cols = [c for c in df.columns if c not in drop_cols_for_next]
         X_next = df.iloc[[-1]][feature_cols]
-        # Drop last row (NaN shifted target) and rename shifted target to original target for training
-        df = df.iloc[:-1].rename(columns={target_name: args.target})
+        # Drop last row (NaN shifted target) and replace target with shifted target to avoid duplicate column names
+        df = df.iloc[:-1].copy()
+        df[args.target] = df[target_name]
+        df = df.drop(columns=[target_name])
     # Keep time series for potential splitting (non next-step path)
     times_series = df["t"] if "t" in df.columns else None
     # Split X and y
