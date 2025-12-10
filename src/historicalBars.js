@@ -19,6 +19,13 @@ export function normaliseBar(bar) {
   else if (typeof ts === 'number') iso = new Date(ts).toISOString();
   const out = { ...bar };
   if (iso) out.t = iso;
+
+  // Ensure Timestamp is stored as a BSON Date in MongoDB
+  if (bar.Timestamp !== undefined) {
+    const d = bar.Timestamp instanceof Date ? bar.Timestamp : new Date(bar.Timestamp);
+    if (!isNaN(d.getTime())) out.Timestamp = d;
+  }
+
   return out;
 }
 
