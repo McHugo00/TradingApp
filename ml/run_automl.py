@@ -481,18 +481,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             if cand in df.columns:
                 detected_time_col = cand
                 break
-    # Normalize time column to 't', coerce to tz-aware datetime, and sort ascending (past -> present)
+    # Determine time column: prefer --time-column; fallback to common names, and use it directly (no 't' normalization)
     expectedtime_iso = None
     X_next = None
     original_time_col = None
     if detected_time_col:
         original_time_col = detected_time_col
-        df["t"] = pd.to_datetime(df[detected_time_col], utc=True, errors="coerce")
-        df = df.sort_values("t").reset_index(drop=True)
-        if detected_time_col != "t":
-            print(f"[mljar] Using time column: t (normalized from {detected_time_col})")
-        else:
-            print(f"[mljar] Using time column: t")
+        # Coerce to tz-aware datetime and sort ascending (past -> present)
+        df[detected_time_col] = pd.to_datetime(df[detected_time_col], utc=True, errors="coerce")
+        df = df.sort_values(detected_time_col).reset_index(drop=True)
+        print(f"[mljar] Using time column: {detected_time_col}")
     else:
         print("[mljar] Warning: No time column found. Provide one via --time-column (e.g., 'Timestamp').")
     # Basic time-aware feature engineering
