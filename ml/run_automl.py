@@ -338,8 +338,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--time-column",
-        default="t",
-        help="Name of the time column to use as expectedtime (default: t). If not found, will try common names like 'Timestamp'. The time column is removed from features.",
+        default="Timestamp",
+        help="Name of the time column to use as expectedtime (default: Timestamp). If not found, will try common names like 't'. The time column is removed from features.",
     )
     p.add_argument(
         "--output-collection",
@@ -477,7 +477,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if preferred_time_col and preferred_time_col in df.columns:
         detected_time_col = preferred_time_col
     else:
-        for cand in ["t", "Timestamp", "timestamp", "time", "date", "datetime", "Datetime", "ts"]:
+        for cand in ["Timestamp", "t", "timestamp", "time", "date", "datetime", "Datetime", "ts"]:
             if cand in df.columns:
                 detected_time_col = cand
                 break
@@ -494,7 +494,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             print(f"[mljar] Using time column: t")
     else:
-        print("[mljar] Warning: No time column found. Provide one via --time-column (e.g., 't').")
+        print("[mljar] Warning: No time column found. Provide one via --time-column (e.g., 'Timestamp').")
     # Basic time-aware feature engineering
     try:
         lags = _parse_int_list(getattr(args, "lags", None) or "1,2,3")
