@@ -8,7 +8,11 @@ from typing import Optional, List, Tuple
 
 import pandas as pd
 import numpy as np
+import warnings
 from sklearn.model_selection import train_test_split
+
+# Silence pandas fragmentation warnings from third-party transformers
+warnings.simplefilter("ignore", pd.errors.PerformanceWarning)
 
 # Optional import: only needed when using --mongo-collection
 try:
@@ -164,8 +168,11 @@ def _featurize(
         except Exception:
             pass
         if pd.api.types.is_datetime64_any_dtype(df[time_col]):
-            df["dow"] = df[time_col].dt.dayofweek
-            df["hour"] = df[time_col].dt.hour
+            new_time_cols = {
+                "dow": df[time_col].dt.dayofweek,
+                "hour": df[time_col].dt.hour,
+            }
+            df = pd.concat([df, pd.DataFrame(new_time_cols, index=df.index)], axis=1)
 
     # Choose a small set of base numeric columns to avoid feature explosion
     base_candidates = [
@@ -187,22 +194,29 @@ def _featurize(
     if target in df.columns and target not in base_cols:
         base_cols.insert(0, target)
 
-    # Add lag features
+    # Add lag features (batch to reduce fragmentation)
+    lag_new_cols = {}
     for col in base_cols:
         for L in lags:
             try:
-                df[f"{col}_lag{L}"] = df[col].shift(L)
+                lag_new_cols[f"{col}_lag{L}"] = df[col].shift(L)
             except Exception:
                 pass
+    if lag_new_cols:
+        df = pd.concat([df, pd.DataFrame(lag_new_cols, index=df.index)], axis=1)
 
-    # Add rolling mean/std features
-    for col in base_cols:
+    # Add rolling mean/std features (batch to reduce fragmentation)
+    roll_new_cols = {}
+    numeric_base_cols = [c for c in base_cols if pd.api.types.is_numeric_dtype(df[c])]
+    for col in numeric_base_cols:
         for W in windows:
             try:
-                df[f"{col}_rollmean{W}"] = df[col].rolling(W).mean()
-                df[f"{col}_rollstd{W}"] = df[col].rolling(W).std()
+                roll_new_cols[f"{col}_rollmean{W}"] = df[col].rolling(W).mean()
+                roll_new_cols[f"{col}_rollstd{W}"] = df[col].rolling(W).std()
             except Exception:
                 pass
+    if roll_new_cols:
+        df = pd.concat([df, pd.DataFrame(roll_new_cols, index=df.index)], axis=1)
 
     return df
 
@@ -636,6 +650,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if algorithms:
         automl_kwargs["algorithms"] = algorithms
     # Optional stronger modeling features (opt-in)
+    # Explicitly disable golden features unless requested to avoid pandas fragmentation warnings
+    automl_kwargs["golden_features"] = False
     if getattr(args, "golden_features", False):
         automl_kwargs["golden_features"] = True
     if getattr(args, "features_selection", False):
