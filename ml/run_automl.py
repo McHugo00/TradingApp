@@ -499,10 +499,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         lags = _parse_int_list(getattr(args, "lags", None) or "1,2,3")
         windows = _parse_int_list(getattr(args, "rolling_windows", None) or "5,10")
-        if "t" in df.columns:
+        if detected_time_col:
             # Drop duplicate timestamps to avoid leakage
-            df = df.drop_duplicates(subset=["t"], keep="last")
-        df = _featurize(df, args.target, "t" if "t" in df.columns else None, lags, windows)
+            df = df.drop_duplicates(subset=[detected_time_col], keep="last")
+        df = _featurize(df, args.target, detected_time_col if detected_time_col else None, lags, windows)
     except Exception as e:
         print(f"[mljar] Featurization skipped due to error: {e}")
     # If next-step forecasting is requested, shift target and prepare next-step features
@@ -515,14 +515,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         if len(df) < 2:
             raise SystemExit("Not enough rows to compute next-step prediction")
         # Compute expected time for next bar: last observed time + median interval (fallback 1 day)
-        time_diffs = df["t"].diff()
+        time_diffs = df[detected_time_col].diff()
         try:
             step = time_diffs.median()
         except Exception:
             step = None
         if not isinstance(step, pd.Timedelta) or pd.isna(step) or step == pd.Timedelta(0):
             step = pd.Timedelta(days=1)
-        last_time = df["t"].iloc[-1]
+        last_time = df[detected_time_col].iloc[-1]
         expectedtime_iso = (last_time + step).strftime("%Y-%m-%dT%H:%M:%SZ")
         # Build X_next from the last available feature row (index -1)
         drop_cols_for_next = [args.target, target_name]
@@ -537,7 +537,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         y_price_series = df[target_name].copy()
         df = df.drop(columns=[target_name])
     # Keep time series for potential splitting (non next-step path)
-    times_series = df["t"] if "t" in df.columns else None
+    times_series = df[detected_time_col] if detected_time_col else None
     # Split X and y
     X, y = _split_xy(df, args.target)
     # Ensure target is a 1-D Series
@@ -603,7 +603,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     tr = max(0.5, min(float(args.train_ratio), 0.95))
     # mljar-supervised doesn't support 'time' validation in the current version; use split with shuffle control
     if args.validation_type == "auto":
-        if args.predict_next or ("t" in df.columns):
+        if args.predict_next or bool(detected_time_col):
             print("[mljar] Using split validation (fallback from time) for time-ordered data")
             validation_strategy = {"validation_type": "split", "train_ratio": tr, "shuffle": False}
         else:
@@ -615,7 +615,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         validation_strategy = {
             "validation_type": "split",
             "train_ratio": tr,
-            "shuffle": not (args.predict_next or ("t" in df.columns)),
+            "shuffle": not (args.predict_next or bool(detected_time_col)),
         }
     elif args.validation_type == "kfold":
         kf = max(2, int(args.k_folds))
