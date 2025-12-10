@@ -339,7 +339,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument(
         "--time-column",
         default="Timestamp",
-        help="Name of the time column to use as expectedtime (default: Timestamp). If not found, will try common names like 't'. The time column is removed from features.",
+        help="Name of the time column to use as expectedtime (default: Timestamp). If not found, will try common names like 't'. The time column is kept as a datetime feature.",
     )
     p.add_argument(
         "--output-collection",
@@ -525,9 +525,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         last_time = df["t"].iloc[-1]
         expectedtime_iso = (last_time + step).strftime("%Y-%m-%dT%H:%M:%SZ")
         # Build X_next from the last available feature row (index -1)
-        drop_cols_for_next = [args.target, target_name, "t"] + (
-            [original_time_col] if original_time_col and original_time_col != "t" else []
-        )
+        drop_cols_for_next = [args.target, target_name]
         feature_cols = [c for c in df.columns if c not in drop_cols_for_next]
         X_next = df.iloc[[-1]][feature_cols]
         last_base_price = float(base_price_full.iloc[-1]) if pd.notna(base_price_full.iloc[-1]) else None
@@ -565,14 +563,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if getattr(args, "predict_next", False) and "base_series" in locals():
             base_series = base_series[mask].reset_index(drop=True)
             y_price_series = y_price_series[mask].reset_index(drop=True)
-    # Drop time columns from features to prevent leakage
-    drop_time_cols = []
-    if "t" in X.columns:
-        drop_time_cols.append("t")
-    if original_time_col and original_time_col in X.columns:
-        drop_time_cols.append(original_time_col)
-    if drop_time_cols:
-        X = X.drop(columns=drop_time_cols)
+    # Keep time columns in features so mljar can detect datetime columns
+    # (do not drop 't' or original time column)
     task_hint = _detect_task(y)
 
     # Stratify only for classification
