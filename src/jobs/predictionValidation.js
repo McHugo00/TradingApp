@@ -19,50 +19,44 @@ export async function predictionValidation(db, options = {}) {
   const now = new Date();
 
   const timeFields = ['expectedtime', 'expected_time', 't', 'timestamp', 'Timestamp'];
-  const actualValueKeys = [
-    'actual',
-    'close',
-    'closeprice',
-    'closePrice',
-    'c',
-    'price',
-    'last_price',
-    'lastPrice',
-    'closing_price'
-  ];
 
-  const extractActualValue = (record) => {
-    if (!record || typeof record !== 'object') return null;
-    const visited = new Set();
-    const queue = [record];
-    const MAX_NODES = 50;
-    let processed = 0;
-
-    while (queue.length && processed < MAX_NODES) {
-      const current = queue.shift();
-      if (!current || typeof current !== 'object') continue;
-      if (visited.has(current)) continue;
-      visited.add(current);
-      processed += 1;
-
-      for (const key of actualValueKeys) {
-        if (Object.prototype.hasOwnProperty.call(current, key)) {
-          const value = current[key];
-          if (value !== undefined && value !== null) {
-            return value;
-          }
-        }
-      }
-
-      for (const value of Object.values(current)) {
-        if (value && typeof value === 'object' && !visited.has(value)) {
-          queue.push(value);
-        }
-      }
-    }
-
-    return null;
+  const normalizeName = (candidate) => {
+    if (candidate === null || candidate === undefined) return '';
+    return candidate.toString().trim().replace(/[^a-z0-9]/gi, '').toLowerCase();
   };
+
+  const aliasGroups = {
+    actual: ['actual', 'actualvalue', 'actual_price', 'actualprice'],
+    closeprice: ['closeprice', 'close_price', 'closePrice', 'ClosePrice', 'closingprice', 'closing_price'],
+    close: ['close', 'Close', 'closing', 'closingPrice', 'closing_price', 'closevalue', 'close_value'],
+    lastprice: ['lastprice', 'last_price', 'lastPrice', 'LastPrice', 'last_trade_price', 'lasttradeprice'],
+    marketclose: ['marketclose', 'market_close', 'regularmarketclose', 'regular_market_close'],
+    mark: ['mark', 'markprice', 'mark_price', 'MarkPrice'],
+    c: ['c', 'C'],
+    price: [
+      'price',
+      'Price',
+      'tradeprice',
+      'trade_price',
+      'marketprice',
+      'market_price',
+      'regularmarketprice',
+      'regularMarketPrice',
+      'avgprice',
+      'averageprice',
+      'AveragePrice'
+    ]
+  };
+
+  const canonicalPriority = Object.keys(aliasGroups);
+
+  const aliasLookup = new Map();
+  for (const [canonical, aliases] of Object.entries(aliasGroups)) {
+    aliasLookup.set(normalizeName(canonical), canonical);
+    for (const alias of aliases) {
+      aliasLookup.set(normalizeName(alias), canonical);
+    }
+  }
 
   const normaliseTimestamp = (value) => {
     if (!value) return null;
@@ -85,6 +79,86 @@ export async function predictionValidation(db, options = {}) {
     if (value === null || value === undefined) return null;
     const num = Number(value);
     return Number.isFinite(num) ? num : null;
+  };
+
+  const resolveNumeric = (value, depth = 0) => {
+    if (depth > 5) return null;
+
+    const direct = toNumber(value);
+    if (direct !== null) return direct;
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const num = resolveNumeric(item, depth + 1);
+        if (num !== null) return num;
+      }
+      return null;
+    }
+
+    if (value && typeof value === 'object') {
+      for (const val of Object.values(value)) {
+        const num = resolveNumeric(val, depth + 1);
+        if (num !== null) return num;
+      }
+    }
+
+    return null;
+  };
+
+  const isPrimitive = (value) =>
+    value === null || (typeof value !== 'object' && typeof value !== 'function');
+
+  const extractActualValue = (record) => {
+    if (!record || typeof record !== 'object') return null;
+
+    const visited = new Set();
+    const queue = [record];
+    const candidates = new Map();
+    const MAX_VISITS = 500;
+    let visitedCount = 0;
+
+    while (queue.length && visitedCount < MAX_VISITS) {
+      const current = queue.shift();
+      if (!current || typeof current !== 'object') continue;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      visitedCount += 1;
+
+      const isArray = Array.isArray(current);
+      const entries = isArray ? current.entries() : Object.entries(current);
+
+      for (const [rawKey, value] of entries) {
+        const key = isArray ? String(rawKey) : rawKey;
+        const normalized = normalizeName(key);
+        const canonical = aliasLookup.get(normalized);
+
+        if (canonical) {
+          const isCurrentPrimitive = isPrimitive(value);
+          const existing = candidates.get(canonical);
+          if (!existing || (isCurrentPrimitive && !isPrimitive(existing.value))) {
+            candidates.set(canonical, { value });
+          }
+        }
+
+        if (value && typeof value === 'object' && !visited.has(value)) {
+          queue.push(value);
+        }
+      }
+    }
+
+    for (const canonical of canonicalPriority) {
+      const candidate = candidates.get(canonical);
+      if (!candidate) continue;
+      const resolved = resolveNumeric(candidate.value);
+      if (resolved !== null) return resolved;
+    }
+
+    for (const candidate of candidates.values()) {
+      const resolved = resolveNumeric(candidate.value);
+      if (resolved !== null) return resolved;
+    }
+
+    return null;
   };
 
   while (await cursor.hasNext()) {
