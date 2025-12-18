@@ -200,6 +200,18 @@ export async function predictionValidation(db, options = {}) {
       continue;
     }
 
+    let expectedDate = null;
+    if (expectedTime instanceof Date && !Number.isNaN(expectedTime.getTime())) {
+      expectedDate = new Date(expectedTime.getTime());
+    } else {
+      const parsedExpected = new Date(expectedTime);
+      if (!Number.isNaN(parsedExpected.getTime())) expectedDate = parsedExpected;
+    }
+
+    const expectedIso = expectedDate ? expectedDate.toISOString() : null;
+    const maxLookaheadDate = expectedDate ? new Date(expectedDate.getTime() + 5 * 60 * 1000) : null;
+    const maxLookaheadIso = maxLookaheadDate ? maxLookaheadDate.toISOString() : null;
+
     const symbol =
       typeof doc.symbol === 'string' ? doc.symbol.trim().toUpperCase() : null;
 
@@ -255,6 +267,8 @@ export async function predictionValidation(db, options = {}) {
     };
 
     addTimeCandidate(expectedTime);
+    if (expectedDate) addTimeCandidate(expectedDate);
+    if (maxLookaheadDate) addTimeCandidate(maxLookaheadDate);
 
     const stringCandidates = Array.from(timeStringCandidates);
     const dateCandidates = timeDateCandidates.slice();
@@ -291,8 +305,9 @@ export async function predictionValidation(db, options = {}) {
     }
 
     let actualRecord = null;
+    let collection;
     try {
-      const collection = db.collection(targetCollectionName);
+      collection = db.collection(targetCollectionName);
       const query = { symbol, $or: orClauses };
       actualRecord = await collection.findOne(query, { sort: { t: -1 } });
     } catch (error) {
@@ -312,6 +327,46 @@ export async function predictionValidation(db, options = {}) {
       continue;
     }
 
+    if (!actualRecord && collection && maxLookaheadDate) {
+      const rangeClauses = [];
+
+      if (expectedDate && maxLookaheadDate) {
+        for (const field of timeFields) {
+          rangeClauses.push({ [field]: { $gte: expectedDate, $lte: maxLookaheadDate } });
+        }
+      }
+
+      if (expectedIso && maxLookaheadIso) {
+        for (const field of timeFields) {
+          rangeClauses.push({ [field]: { $gte: expectedIso, $lte: maxLookaheadIso } });
+        }
+      }
+
+      if (rangeClauses.length) {
+        try {
+          actualRecord = await collection.findOne(
+            { symbol, $or: rangeClauses },
+            { sort: { t: 1 } }
+          );
+        } catch (error) {
+          updates.push({
+            updateOne: {
+              filter: { _id: doc._id },
+              update: {
+                $set: {
+                  validation_status: 'collection_lookup_failed',
+                  validation_error: error && error.message ? error.message : String(error),
+                  validated_at: now,
+                  actual_source_collection: targetCollectionName
+                }
+              }
+            }
+          });
+          continue;
+        }
+      }
+    }
+
     if (!actualRecord) {
       updates.push({
         updateOne: {
@@ -319,7 +374,7 @@ export async function predictionValidation(db, options = {}) {
           update: {
             $set: {
               validation_status: 'actual_not_found',
-              validation_error: `No matching actual record found in ${targetCollectionName} for symbol ${symbol} at ${expectedTime}`,
+              validation_error: `No matching actual record found in ${targetCollectionName} for symbol ${symbol} at ${expectedTime} (including lookahead up to +5 minutes)`,
               validated_at: now,
               actual_source_collection: targetCollectionName
             }
