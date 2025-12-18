@@ -12,6 +12,7 @@ import { syncOrders } from './syncOrders.js';
 import { syncActivities } from './syncActivities.js';
 import { buildSnapshots1m } from './jobs/buildSnapshots1m.js';
 import { enrichIndicators } from './jobs/enrichIndicators.js';
+import { predictionValidation } from './jobs/predictionValidation.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8000;
 
@@ -385,6 +386,16 @@ async function main() {
     console.warn('buildSnapshots1m on startup failed:', e && e.message ? e.message : e);
   }
 
+  // Validate predictions on startup
+  try {
+    const result = await predictionValidation(db, { onlyMissing: false });
+    const processed =
+      result && typeof result.processed === 'number' ? result.processed : 0;
+    console.log(`predictionValidation processed ${processed} prediction(s) on startup`);
+  } catch (e) {
+    console.warn('predictionValidation on startup failed:', e && e.message ? e.message : e);
+  }
+
   // Periodic refresh timers for positions, portfolio history, bars, quotes, trades, orders
   if (alpacaClient) {
     // Positions: every 15s (existing behavior)
@@ -448,6 +459,34 @@ async function main() {
     } catch (_) {}
   }
 
+  try {
+    timers._predictionValidationRunning = false;
+    timers.predictionValidation = setInterval(async () => {
+      if (timers._predictionValidationRunning) return;
+      timers._predictionValidationRunning = true;
+      try {
+        await predictionValidation(db, { onlyMissing: true });
+      } catch (e) {
+        console.warn('predictionValidation interval failed:', e && e.message ? e.message : e);
+      } finally {
+        timers._predictionValidationRunning = false;
+      }
+    }, 60000);
+  } catch (_) {}
+
+  const schedules = [
+    { name: 'predictionValidation', interval_ms: 60000 }
+  ];
+
+  if (alpacaClient) {
+    schedules.push(
+      { name: 'positions', interval_ms: 15000 },
+      { name: 'bars+enrichIndicators', interval_ms: 120000 },
+      { name: 'quotes+trades+buildSnapshots1m', interval_ms: 180000 },
+      { name: 'orders', interval_ms: 15000 }
+    );
+  }
+
   const startupDoc = {
     started_at: new Date(),
     pid: process.pid,
@@ -463,14 +502,7 @@ async function main() {
     symbols: settings.symbols || [],
     symbols_count: (settings.symbols || []).length,
     has_apca_credentials: Boolean(settings.apcaApiKeyId && settings.apcaApiSecretKey),
-    schedules: alpacaClient
-      ? [
-          { name: 'positions', interval_ms: 15000 },
-          { name: 'bars+enrichIndicators', interval_ms: 120000 },
-          { name: 'quotes+trades+buildSnapshots1m', interval_ms: 180000 },
-          { name: 'orders', interval_ms: 15000 }
-        ]
-      : [],
+    schedules,
     env: { NODE_ENV: process.env.NODE_ENV || null }
   };
   try {
@@ -497,6 +529,7 @@ async function main() {
       if (timers && timers.quotes) clearInterval(timers.quotes);
       if (timers && timers.trades) clearInterval(timers.trades);
       if (timers && timers.orders) clearInterval(timers.orders);
+      if (timers && timers.predictionValidation) clearInterval(timers.predictionValidation);
       await closeDb();
     } finally {
       server.close(() => process.exit(0));
