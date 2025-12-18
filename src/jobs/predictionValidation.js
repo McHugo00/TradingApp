@@ -209,8 +209,6 @@ export async function predictionValidation(db, options = {}) {
     }
 
     const expectedIso = expectedDate ? expectedDate.toISOString() : null;
-    const maxLookaheadDate = expectedDate ? new Date(expectedDate.getTime() + 5 * 60 * 1000) : null;
-    const maxLookaheadIso = maxLookaheadDate ? maxLookaheadDate.toISOString() : null;
 
     const symbol =
       typeof doc.symbol === 'string' ? doc.symbol.trim().toUpperCase() : null;
@@ -268,7 +266,6 @@ export async function predictionValidation(db, options = {}) {
 
     addTimeCandidate(expectedTime);
     if (expectedDate) addTimeCandidate(expectedDate);
-    if (maxLookaheadDate) addTimeCandidate(maxLookaheadDate);
 
     const stringCandidates = Array.from(timeStringCandidates);
     const dateCandidates = timeDateCandidates.slice();
@@ -327,18 +324,18 @@ export async function predictionValidation(db, options = {}) {
       continue;
     }
 
-    if (!actualRecord && collection && maxLookaheadDate) {
+    if (!actualRecord && collection) {
       const rangeClauses = [];
 
-      if (expectedDate && maxLookaheadDate) {
+      if (expectedDate) {
         for (const field of timeFields) {
-          rangeClauses.push({ [field]: { $gte: expectedDate, $lte: maxLookaheadDate } });
+          rangeClauses.push({ [field]: { $gte: expectedDate } });
         }
       }
 
-      if (expectedIso && maxLookaheadIso) {
+      if (expectedIso) {
         for (const field of timeFields) {
-          rangeClauses.push({ [field]: { $gte: expectedIso, $lte: maxLookaheadIso } });
+          rangeClauses.push({ [field]: { $gte: expectedIso } });
         }
       }
 
@@ -374,7 +371,7 @@ export async function predictionValidation(db, options = {}) {
           update: {
             $set: {
               validation_status: 'actual_not_found',
-              validation_error: `No matching actual record found in ${targetCollectionName} for symbol ${symbol} at ${expectedTime} (including lookahead up to +5 minutes)`,
+              validation_error: `No matching actual record found in ${targetCollectionName} for symbol ${symbol} at ${expectedTime} (searched for later records as well)`,
               validated_at: now,
               actual_source_collection: targetCollectionName
             }
