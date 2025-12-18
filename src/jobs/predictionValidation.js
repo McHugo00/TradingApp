@@ -203,6 +203,22 @@ export async function predictionValidation(db, options = {}) {
     const symbol =
       typeof doc.symbol === 'string' ? doc.symbol.trim().toUpperCase() : null;
 
+    if (!symbol) {
+      updates.push({
+        updateOne: {
+          filter: { _id: doc._id },
+          update: {
+            $set: {
+              validation_status: 'missing_symbol',
+              validation_error: 'Prediction document missing symbol for actual lookup',
+              validated_at: now
+            }
+          }
+        }
+      });
+      continue;
+    }
+
     const timeStringCandidates = new Set();
     const timeDateCandidates = [];
     const seenDateMs = new Set();
@@ -277,13 +293,8 @@ export async function predictionValidation(db, options = {}) {
     let actualRecord = null;
     try {
       const collection = db.collection(targetCollectionName);
-      const baseFilter = symbol ? { symbol } : {};
-      const query = { ...baseFilter, $or: orClauses };
+      const query = { symbol, $or: orClauses };
       actualRecord = await collection.findOne(query, { sort: { t: -1 } });
-
-      if (!actualRecord && symbol) {
-        actualRecord = await collection.findOne({ $or: orClauses }, { sort: { t: -1 } });
-      }
     } catch (error) {
       updates.push({
         updateOne: {
@@ -308,7 +319,7 @@ export async function predictionValidation(db, options = {}) {
           update: {
             $set: {
               validation_status: 'actual_not_found',
-              validation_error: `No matching actual record found in ${targetCollectionName}`,
+              validation_error: `No matching actual record found in ${targetCollectionName} for symbol ${symbol} at ${expectedTime}`,
               validated_at: now,
               actual_source_collection: targetCollectionName
             }
