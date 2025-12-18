@@ -105,6 +105,30 @@ def _load_from_mongo(
     return df
 
 
+def _update_listeningsymbol_training(symbol: str, collection: str, timestamp_iso: str, database: Optional[str] = None) -> None:
+    if not symbol or not collection or not timestamp_iso:
+        return
+    symbol_upper = str(symbol).strip().upper()
+    try:
+        client = _connect_mongo()
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print(f"[mljar] Warning: Skipping listeningsymbols update due to connection error: {exc}")
+        return
+    try:
+        db_name = database or os.getenv("MONGODB_DB") or "TradingApp"
+        listen_col = client[db_name]["listeningsymbols"]
+        listen_col.update_one(
+            {"symbol": symbol_upper},
+            {"$set": {collection: timestamp_iso}},
+            upsert=True,
+        )
+        print(f"[mljar] Updated listeningsymbols.{collection} for symbol={symbol_upper} at {timestamp_iso}")
+    except Exception as exc:
+        print(f"[mljar] Warning: Failed to update listeningsymbols for symbol={symbol_upper}: {exc}")
+
+
 def _detect_task(y: pd.Series) -> str:
     # Let AutoML handle task detection by default, but we can provide a hint:
     # Return one of 'binary_classification', 'multiclass_classification', 'regression'
@@ -661,6 +685,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"[mljar] Detected task hint: {task_hint}")
 
     automl.fit(X_train, y_train)
+
+    training_completed_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    symbol_for_update = str(args.symbol).strip().upper() if args.symbol else None
+    source_collection = args.mongo_collection or args.collection
+    if symbol_for_update and source_collection:
+        _update_listeningsymbol_training(symbol_for_update, source_collection, training_completed_iso, args.mongo_db)
 
     # Evaluate on holdout
     preds = automl.predict(X_test)
