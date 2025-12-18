@@ -20,6 +20,10 @@ try:
 except Exception:  # pragma: no cover
     MongoClient = None  # type: ignore
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from pymongo import MongoClient as MongoClientType
+
 try:
     from supervised.automl import AutoML
 except ImportError as e:
@@ -59,11 +63,10 @@ def _load_from_csv(path: str) -> pd.DataFrame:
     p = os.path.abspath(path)
     if not os.path.isfile(p):
         raise SystemExit(f"CSV file not found: {p}")
-    df = pd.read_csv(p)
-    return df
+    return pd.read_csv(p)
 
 
-def _connect_mongo(uri_env="MONGODB_URI") -> MongoClient:
+def _connect_mongo(uri_env="MONGODB_URI") -> "MongoClientType":
     if MongoClient is None:
         raise SystemExit("pymongo is not installed. Please: pip install pymongo")
     uri = os.getenv(uri_env)
@@ -742,7 +745,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "created_at": created_at_iso,
                         "input_Timestamp": last_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                         "input_ClosePrice": float(last_base_price) if last_base_price is not None else None,
-                        "prediction": float(next_pred),
+                        args.target: float(next_pred),
                     }},
                     upsert=True,
                 )
@@ -779,7 +782,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                             "collection": source_collection,
                             "expectedtime": latest_iso,
                             "created_at": created_at_iso,
-                            "prediction": latest_pred,
+                            args.target: latest_pred,
                         }},
                         upsert=True,
                     )
