@@ -869,7 +869,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "created_at": created_at_iso,
                         "input_Timestamp": last_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                         "input_ClosePrice": float(last_base_price) if last_base_price is not None else None,
-                        args.target: float(next_pred),
+                        "prediction": float(next_pred),
                     }},
                     upsert=True,
                 )
@@ -906,7 +906,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                             "collection": source_collection,
                             "expectedtime": latest_iso,
                             "created_at": created_at_iso,
-                            args.target: latest_pred,
+                            "prediction": latest_pred,
                         }},
                         upsert=True,
                     )
