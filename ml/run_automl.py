@@ -50,6 +50,19 @@ def _ensure_results_path(path: Optional[str], default_name: Optional[str] = None
     return rp
 
 
+def _resolve_existing_results_path(path: Optional[str], default_name: Optional[str] = None) -> str:
+    if path:
+        rp = os.path.abspath(path)
+    else:
+        name = default_name or _timestamp()
+        rp = os.path.abspath(os.path.join("ml", "outputs", name))
+    if not os.path.isdir(rp):
+        raise SystemExit(
+            f"Existing AutoML results not found at '{rp}'. Provide --results-path or run training first."
+        )
+    return rp
+
+
 def _maybe_str_to_json(s: Optional[str]):
     if not s:
         return None
@@ -379,6 +392,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Predict ClosePrice at t+1 from features at t and save a single next-step forecast.",
     )
     p.add_argument(
+        "--predict-only",
+        action="store_true",
+        help="Skip training and load an existing AutoML project to generate predictions only.",
+    )
+    p.add_argument(
         "--tune-strong",
         action="store_true",
         help="Enable stronger tuning (switch to 'Compete' mode if currently 'Explain').",
@@ -491,11 +509,17 @@ def load_dataframe(args: argparse.Namespace) -> pd.DataFrame:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
+    predict_only = bool(getattr(args, "predict_only", False))
+    if predict_only and not getattr(args, "predict_next", False):
+        raise SystemExit("--predict-only currently requires --predict-next.")
     # Build a stable default output folder name like SYMBOL_COLLECTION for re-use
     sym_for_name = str(args.symbol).strip().upper() if args.symbol else None
     coll_for_name = args.mongo_collection or args.collection
     default_name = f"{sym_for_name}_{coll_for_name}" if sym_for_name and coll_for_name else None
-    results_path = _ensure_results_path(args.results_path, default_name)
+    if predict_only:
+        results_path = _resolve_existing_results_path(args.results_path, default_name)
+    else:
+        results_path = _ensure_results_path(args.results_path, default_name)
 
     df = load_dataframe(args)
     # Determine time column: prefer --time-column; fallback to common names, then normalize to canonical 't'
@@ -614,86 +638,107 @@ def main(argv: Optional[List[str]] = None) -> int:
             X, y, test_size=args.test_size, random_state=args.random_state, stratify=stratify
         )
 
-    algorithms = _comma_list(args.algorithms)
-    # Provide a stronger default algorithm set when tuning is requested and none specified
-    if getattr(args, "tune_strong", False) and args.algorithms is None:
-        algorithms = ["LightGBM", "Xgboost", "CatBoost", "Random Forest", "Extra Trees", "Linear"]
+    automl = None
+    preds = None
+    if predict_only:
+        print(f"[mljar] Loading AutoML project from: {results_path}" + (f" [{default_name}]" if default_name else ""))
+        try:
+            automl = AutoML(
+                results_path=results_path,
+                total_time_limit=0,
+                load_models=True,
+                ml_task=task_hint,
+                verbose=args.verbose,
+            )
+        except Exception as e:
+            raise SystemExit(f"Failed to load AutoML project from '{results_path}': {e}")
+        print(f"[mljar] Detected task hint: {task_hint}")
+    else:
+        algorithms = _comma_list(args.algorithms)
+        # Provide a stronger default algorithm set when tuning is requested and none specified
+        if getattr(args, "tune_strong", False) and args.algorithms is None:
+            algorithms = ["LightGBM", "Xgboost", "CatBoost", "Random Forest", "Extra Trees", "Linear"]
 
-    # Select a default evaluation metric if none provided.
-    # For ClosePrice regression we default to RMSE; for classification we use logloss.
-    eval_metric = args.eval_metric or ("rmse" if "regression" in task_hint else "logloss")
+        # Select a default evaluation metric if none provided.
+        # For ClosePrice regression we default to RMSE; for classification we use logloss.
+        eval_metric = args.eval_metric or ("rmse" if "regression" in task_hint else "logloss")
 
-    # Build validation strategy
-    validation_strategy = None
-    tr = max(0.5, min(float(args.train_ratio), 0.95))
-    # mljar-supervised doesn't support 'time' validation in the current version; use split with shuffle control
-    if args.validation_type == "auto":
-        if args.predict_next or bool(detected_time_col):
-            print("[mljar] Using split validation (fallback from time) for time-ordered data")
+        # Build validation strategy
+        validation_strategy = None
+        tr = max(0.5, min(float(args.train_ratio), 0.95))
+        # mljar-supervised doesn't support 'time' validation in the current version; use split with shuffle control
+        if args.validation_type == "auto":
+            if args.predict_next or bool(detected_time_col):
+                print("[mljar] Using split validation (fallback from time) for time-ordered data")
+                validation_strategy = {"validation_type": "split", "train_ratio": tr, "shuffle": False}
+            else:
+                validation_strategy = {"validation_type": "split", "train_ratio": tr, "shuffle": True}
+        elif args.validation_type == "time":
+            print("[mljar] validation_type 'time' not supported; falling back to 'split'")
             validation_strategy = {"validation_type": "split", "train_ratio": tr, "shuffle": False}
-        else:
-            validation_strategy = {"validation_type": "split", "train_ratio": tr, "shuffle": True}
-    elif args.validation_type == "time":
-        print("[mljar] validation_type 'time' not supported; falling back to 'split'")
-        validation_strategy = {"validation_type": "split", "train_ratio": tr, "shuffle": False}
-    elif args.validation_type == "split":
-        validation_strategy = {
-            "validation_type": "split",
-            "train_ratio": tr,
-            "shuffle": not (args.predict_next or bool(detected_time_col)),
-        }
-    elif args.validation_type == "kfold":
-        kf = max(2, int(args.k_folds))
-        validation_strategy = {"validation_type": "kfold", "k_folds": kf}
+        elif args.validation_type == "split":
+            validation_strategy = {
+                "validation_type": "split",
+                "train_ratio": tr,
+                "shuffle": not (args.predict_next or bool(detected_time_col)),
+            }
+        elif args.validation_type == "kfold":
+            kf = max(2, int(args.k_folds))
+            validation_strategy = {"validation_type": "kfold", "k_folds": kf}
 
-    # Potentially strengthen mode when requested
-    mode_use = args.mode
-    if getattr(args, "tune_strong", False) and args.mode == "Explain":
-        mode_use = "Compete"
-        print("[mljar] tune-strong enabled: switching mode to 'Compete' for stronger tuning")
+        # Potentially strengthen mode when requested
+        mode_use = args.mode
+        if getattr(args, "tune_strong", False) and args.mode == "Explain":
+            mode_use = "Compete"
+            print("[mljar] tune-strong enabled: switching mode to 'Compete' for stronger tuning")
 
-    automl_kwargs = dict(
-        mode=mode_use,
-        total_time_limit=args.time_limit,
-        results_path=results_path,
-        eval_metric=eval_metric,
-        explain_level=args.explain_level,
-        random_state=args.random_state,
-        verbose=args.verbose,
-        ml_task=task_hint,
-    )
-    if validation_strategy:
-        automl_kwargs["validation_strategy"] = validation_strategy
-    if algorithms:
-        automl_kwargs["algorithms"] = algorithms
-    # Optional stronger modeling features (opt-in)
-    # Explicitly disable golden features unless requested to avoid pandas fragmentation warnings
-    automl_kwargs["golden_features"] = False
-    if getattr(args, "golden_features", False):
-        automl_kwargs["golden_features"] = True
-    if getattr(args, "features_selection", False):
-        automl_kwargs["features_selection"] = True
-    if getattr(args, "stack_models", False):
-        automl_kwargs["stack_models"] = True
-    if getattr(args, "train_ensemble", False):
-        automl_kwargs["train_ensemble"] = True
+        automl_kwargs = dict(
+            mode=mode_use,
+            total_time_limit=args.time_limit,
+            results_path=results_path,
+            eval_metric=eval_metric,
+            explain_level=args.explain_level,
+            random_state=args.random_state,
+            verbose=args.verbose,
+            ml_task=task_hint,
+        )
+        if validation_strategy:
+            automl_kwargs["validation_strategy"] = validation_strategy
+        if algorithms:
+            automl_kwargs["algorithms"] = algorithms
+        # Optional stronger modeling features (opt-in)
+        # Explicitly disable golden features unless requested to avoid pandas fragmentation warnings
+        automl_kwargs["golden_features"] = False
+        if getattr(args, "golden_features", False):
+            automl_kwargs["golden_features"] = True
+        if getattr(args, "features_selection", False):
+            automl_kwargs["features_selection"] = True
+        if getattr(args, "stack_models", False):
+            automl_kwargs["stack_models"] = True
+        if getattr(args, "train_ensemble", False):
+            automl_kwargs["train_ensemble"] = True
 
-    automl = AutoML(**automl_kwargs)
+        automl = AutoML(**automl_kwargs)
 
-    print(f"[mljar] Starting AutoML in mode={automl_kwargs.get('mode')} time_limit={args.time_limit}s")
-    print(f"[mljar] Results path: {results_path}" + (f" [{default_name}]" if default_name else ""))
-    print(f"[mljar] Detected task hint: {task_hint}")
+        print(f"[mljar] Starting AutoML in mode={automl_kwargs.get('mode')} time_limit={args.time_limit}s")
+        print(f"[mljar] Results path: {results_path}" + (f" [{default_name}]" if default_name else ""))
+        print(f"[mljar] Detected task hint: {task_hint}")
 
-    automl.fit(X_train, y_train)
+        if X_train is None or y_train is None:
+            raise SystemExit("Training split failed; please verify input data is sufficient for modeling.")
+        automl.fit(X_train, y_train)
 
-    training_completed_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    symbol_for_update = str(args.symbol).strip().upper() if args.symbol else None
-    source_collection = args.mongo_collection or args.collection
-    if symbol_for_update and source_collection:
-        _update_listeningsymbol_training(symbol_for_update, source_collection, training_completed_iso, args.mongo_db)
+        training_completed_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        symbol_for_update = str(args.symbol).strip().upper() if args.symbol else None
+        source_collection = args.mongo_collection or args.collection
+        if symbol_for_update and source_collection:
+            _update_listeningsymbol_training(
+                symbol_for_update, source_collection, training_completed_iso, args.mongo_db
+            )
 
-    # Evaluate on holdout
-    preds = automl.predict(X_test)
+        if X_test is not None:
+            preds = automl.predict(X_test)
+
     # Compute next-step prediction if requested
     next_pred = None
     if getattr(args, "predict_next", False) and 'X_next' in locals() and X_next is not None:
@@ -723,34 +768,35 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"[mljar] Failed to compute next-step prediction: {e}")
     # Compute holdout RMSE for regression tasks
     rmse = None
-    try:
-        if "classification" in task_hint:
-            rmse = None
-            print("[mljar] Skipping RMSE: classification task detected")
-        else:
-            from sklearn.metrics import mean_squared_error
-            if getattr(args, "predict_next", False) and transform_kind in ("pct", "log"):
-                # Evaluate in price space
-                preds_price = _invert_target_transform(transform_kind, base_test, preds)
-                y_true_price = pd.Series(yprice_test).astype(float).reset_index(drop=True)
-                preds_price = pd.Series(preds_price).astype(float).reset_index(drop=True)
-                m = min(len(y_true_price), len(preds_price))
-                if m > 1:
-                    rmse = float(np.sqrt(mean_squared_error(y_true_price.iloc[:m], preds_price.iloc[:m])))
-                    print(f"[mljar] Holdout RMSE (price): {rmse:.6f}")
-                else:
-                    print("[mljar] Not enough samples to compute RMSE in price space")
+    if not predict_only:
+        try:
+            if "classification" in task_hint:
+                rmse = None
+                print("[mljar] Skipping RMSE: classification task detected")
             else:
-                y_true_np = np.asarray(y_test, dtype=float).reshape(-1)
-                preds_np = np.asarray(preds, dtype=float).reshape(-1)
-                m = min(len(y_true_np), len(preds_np))
-                if m > 1:
-                    rmse = float(np.sqrt(mean_squared_error(y_true_np[:m], preds_np[:m])))
-                    print(f"[mljar] Holdout RMSE: {rmse:.6f}")
+                from sklearn.metrics import mean_squared_error
+                if getattr(args, "predict_next", False) and transform_kind in ("pct", "log"):
+                    # Evaluate in price space
+                    preds_price = _invert_target_transform(transform_kind, base_test, preds)
+                    y_true_price = pd.Series(yprice_test).astype(float).reset_index(drop=True)
+                    preds_price = pd.Series(preds_price).astype(float).reset_index(drop=True)
+                    m = min(len(y_true_price), len(preds_price))
+                    if m > 1:
+                        rmse = float(np.sqrt(mean_squared_error(y_true_price.iloc[:m], preds_price.iloc[:m])))
+                        print(f"[mljar] Holdout RMSE (price): {rmse:.6f}")
+                    else:
+                        print("[mljar] Not enough samples to compute RMSE in price space")
                 else:
-                    print("[mljar] Not enough samples to compute RMSE")
-    except Exception as e:
-        print(f"[mljar] Skipping RMSE computation due to: {e}")
+                    y_true_np = np.asarray(y_test, dtype=float).reshape(-1)
+                    preds_np = np.asarray(preds, dtype=float).reshape(-1)
+                    m = min(len(y_true_np), len(preds_np))
+                    if m > 1:
+                        rmse = float(np.sqrt(mean_squared_error(y_true_np[:m], preds_np[:m])))
+                        print(f"[mljar] Holdout RMSE: {rmse:.6f}")
+                    else:
+                        print("[mljar] Not enough samples to compute RMSE")
+        except Exception as e:
+            print(f"[mljar] Skipping RMSE computation due to: {e}")
 
     # Save predictions summary to MongoDB 'prediction' collection
     try:
@@ -824,7 +870,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except Exception as e:
         print(f"[mljar] Failed to save predictions to MongoDB: {e}")
 
-    if args.save_predictions:
+    if args.save_predictions and not predict_only:
         out_csv = os.path.join(results_path, "test_predictions.csv")
         pd.DataFrame(
             {
@@ -835,7 +881,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         ).to_csv(out_csv, index=False)
         print(f"[mljar] Saved predictions to: {out_csv}")
 
-    print("[mljar] AutoML completed.")
+    print("[mljar] Prediction-only run completed." if predict_only else "[mljar] AutoML completed.")
     print(f"[mljar] Explore reports and models in: {results_path}")
     return 0
 
