@@ -624,19 +624,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         except Exception:
             stratify = None
 
-    if getattr(args, "predict_next", False):
-        X_train, X_test, y_train, y_test, base_train, base_test, yprice_train, yprice_test = train_test_split(
-            X, y, base_series, y_price_series, test_size=args.test_size, random_state=args.random_state, shuffle=False
-        )
-    elif times_series is not None:
-        # Preserve chronological order for time-series data; stratification is incompatible with shuffle=False
-        X_train, X_test, y_train, y_test, t_train, t_test = train_test_split(
-            X, y, times_series, test_size=args.test_size, random_state=args.random_state, shuffle=False, stratify=None
-        )
-    else:
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=args.test_size, random_state=args.random_state, stratify=stratify
-        )
+    base_train = base_test = yprice_train = yprice_test = None
+    t_train = t_test = None
+    X_train = X_test = y_train = y_test = None
+    if not predict_only:
+        if getattr(args, "predict_next", False):
+            X_train, X_test, y_train, y_test, base_train, base_test, yprice_train, yprice_test = train_test_split(
+                X, y, base_series, y_price_series, test_size=args.test_size, random_state=args.random_state, shuffle=False
+            )
+        elif times_series is not None:
+            # Preserve chronological order for time-series data; stratification is incompatible with shuffle=False
+            X_train, X_test, y_train, y_test, t_train, t_test = train_test_split(
+                X, y, times_series, test_size=args.test_size, random_state=args.random_state, shuffle=False, stratify=None
+            )
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=args.test_size, random_state=args.random_state, stratify=stratify
+            )
 
     automl = None
     preds = None
