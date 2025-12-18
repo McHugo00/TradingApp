@@ -10,6 +10,7 @@ export async function predictionValidation(db, options = {}) {
   if (options.onlyMissing) {
     query.actual = { $exists: false };
   }
+  query.validation_status = { $ne: 'validated' };
 
   const limit = typeof options.limit === 'number' && options.limit > 0 ? options.limit : 500;
 
