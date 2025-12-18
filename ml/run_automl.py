@@ -175,6 +175,49 @@ def _comma_list(s: Optional[str]) -> Optional[List[str]]:
     return [x for x in out if x]
 
 
+def _normalize_name(name: str) -> str:
+    return "".join(ch for ch in str(name).lower() if ch.isalnum())
+
+
+def _resolve_target_column(df: pd.DataFrame, requested: str) -> str:
+    candidate = str(requested or "").strip()
+    if not candidate:
+        raise SystemExit("Target column must be specified via --target.")
+    if candidate in df.columns:
+        return candidate
+    case_insensitive = [col for col in df.columns if col.lower() == candidate.lower()]
+    if case_insensitive:
+        resolved = case_insensitive[0]
+        print(
+            f"[mljar] Target column '{candidate}' not found with exact match; using '{resolved}' (case-insensitive match)."
+        )
+        return resolved
+    normalized = _normalize_name(candidate)
+    alias_map = {
+        "closeprice": ["ClosePrice", "Close", "close", "close_price", "closeprice"],
+        "close": ["Close", "close"],
+        "adjclose": ["Adj Close", "adj_close", "adjclose"],
+        "adjcloseprice": ["Adj Close", "adj_close", "adjclose"],
+    }
+    for alt in alias_map.get(normalized, []):
+        if alt in df.columns:
+            print(f"[mljar] Target column '{candidate}' not found; using '{alt}' from dataset.")
+            return alt
+    normalized_matches = [col for col in df.columns if _normalize_name(col) == normalized]
+    if normalized_matches:
+        resolved = normalized_matches[0]
+        print(
+            f"[mljar] Target column '{candidate}' not found; using '{resolved}' (normalized match)."
+        )
+        return resolved
+    available_cols = ", ".join(map(str, df.columns[:20]))
+    raise SystemExit(
+        f"Target column '{candidate}' not found in dataset. "
+        "Use --target to specify an existing column. "
+        f"Available columns include: {available_cols}"
+    )
+
+
 def _parse_int_list(s: Optional[str]) -> List[int]:
     if not s:
         return []
@@ -522,7 +565,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         results_path = _ensure_results_path(args.results_path, default_name)
 
     df = load_dataframe(args)
-    # Determine time column: prefer --time-column; fallback to common names, then normalize to canonical 't'
+    args.target = _resolve_target_column(df, args.target)
+    # Determine time column: prefer --time-column; fallback to common names.
     preferred_time_col = args.time_column
     detected_time_col = None
     if preferred_time_col and preferred_time_col in df.columns:
@@ -650,7 +694,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             automl = AutoML(
                 results_path=results_path,
                 total_time_limit=0,
-                load_models=True,
+                mode=args.mode,
                 ml_task=task_hint,
                 verbose=args.verbose,
             )
