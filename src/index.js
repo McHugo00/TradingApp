@@ -366,18 +366,6 @@ async function main() {
     console.warn('syncOrders on startup failed:', e && e.message ? e.message : e);
   }
 
-  // Sync account activities on startup (last 30 days)
-  try {
-    if (alpacaClient) {
-      await syncActivities(alpacaClient, db, { daysBack: 30, paper: settings.isPaper });
-      console.log('syncActivities (30d) completed on startup');
-    } else {
-      console.warn('Skipping syncActivities: missing Alpaca credentials');
-    }
-  } catch (e) {
-    console.warn('syncActivities on startup failed:', e && e.message ? e.message : e);
-  }
-
   // Build market snapshots (1m) on startup after bars/quotes/trades are synced
   try {
     await buildSnapshots1m(db, { daysBack: 30, incremental: true });
@@ -403,6 +391,35 @@ async function main() {
       timers.pos = setInterval(() => {
         syncPositions(alpacaClient, db, { paper: settings.isPaper }).catch(() => {});
       }, 15000);
+    } catch (_) {}
+
+    // Activities at the top of every hour
+    try {
+      timers._activitiesRunning = false;
+      const scheduleActivities = () => {
+        const now = new Date();
+        const nextHour = new Date(now);
+        nextHour.setMinutes(0, 0, 0);
+        nextHour.setHours(nextHour.getHours() + 1);
+        const delay = Math.max(0, nextHour.getTime() - now.getTime());
+        timers.activities = setTimeout(async () => {
+          if (timers._activitiesRunning) {
+            scheduleActivities();
+            return;
+          }
+          timers._activitiesRunning = true;
+          try {
+            await syncActivities(alpacaClient, db, { daysBack: 30, paper: settings.isPaper });
+            console.log('[activities] Hourly sync completed');
+          } catch (e) {
+            console.warn('syncActivities hourly run failed:', e && e.message ? e.message : e);
+          } finally {
+            timers._activitiesRunning = false;
+            scheduleActivities();
+          }
+        }, delay);
+      };
+      scheduleActivities();
     } catch (_) {}
 
 
@@ -483,7 +500,8 @@ async function main() {
       { name: 'positions', interval_ms: 15000 },
       { name: 'bars+enrichIndicators', interval_ms: 120000 },
       { name: 'quotes+trades+buildSnapshots1m', interval_ms: 180000 },
-      { name: 'orders', interval_ms: 15000 }
+      { name: 'orders', interval_ms: 15000 },
+      { name: 'activities', interval_ms: 3600000 }
     );
   }
 
@@ -529,6 +547,7 @@ async function main() {
       if (timers && timers.quotes) clearInterval(timers.quotes);
       if (timers && timers.trades) clearInterval(timers.trades);
       if (timers && timers.orders) clearInterval(timers.orders);
+      if (timers && timers.activities) clearTimeout(timers.activities);
       if (timers && timers.predictionValidation) clearInterval(timers.predictionValidation);
       await closeDb();
     } finally {
