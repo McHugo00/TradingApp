@@ -56,11 +56,45 @@ function runAutomlProcess(pythonBin, collection, symbol) {
 export async function runAutomlPredictionJobs(options = {}) {
   const pythonBin = options.pythonBin || process.env.PYTHON_BIN || 'python';
 
+  const normalizedFields = Array.isArray(options.fields)
+    ? options.fields
+        .map((field) => (field === undefined || field === null ? '' : field.toString().trim()))
+        .filter(Boolean)
+    : [];
+
+  if (normalizedFields.length) {
+    const knownTargets = new Set(
+      COLLECTION_TARGETS.flatMap((target) => [target.field, target.collection])
+    );
+    const unknown = normalizedFields.filter((field) => !knownTargets.has(field));
+    if (unknown.length) {
+      console.warn(`[automl] Ignoring unknown collection field(s): ${unknown.join(', ')}`);
+    }
+  }
+
+  const targets =
+    normalizedFields.length > 0
+      ? COLLECTION_TARGETS.filter(
+          (target) =>
+            normalizedFields.includes(target.field) || normalizedFields.includes(target.collection)
+        )
+      : COLLECTION_TARGETS;
+
+  if (!targets.length) {
+    return {
+      symbolsEvaluated: 0,
+      jobsPlanned: 0,
+      jobsSucceeded: 0,
+      jobsFailed: 0,
+      targetFields: []
+    };
+  }
+
   await connectDb();
   try {
     const db = await getDb();
     const projection = { symbol: 1 };
-    for (const target of COLLECTION_TARGETS) {
+    for (const target of targets) {
       projection[target.field] = 1;
     }
 
@@ -77,7 +111,7 @@ export async function runAutomlPredictionJobs(options = {}) {
 
       symbolsEvaluated += 1;
 
-      for (const target of COLLECTION_TARGETS) {
+      for (const target of targets) {
         if (hasTrainedDate(doc[target.field])) {
           jobs.push({
             symbol,
@@ -116,7 +150,8 @@ export async function runAutomlPredictionJobs(options = {}) {
       symbolsEvaluated,
       jobsPlanned: jobs.length,
       jobsSucceeded,
-      jobsFailed
+      jobsFailed,
+      targetFields: targets.map((t) => t.field)
     };
   } finally {
     try {

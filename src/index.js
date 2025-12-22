@@ -13,6 +13,7 @@ import { syncActivities } from './syncActivities.js';
 import { buildSnapshots1m } from './jobs/buildSnapshots1m.js';
 import { enrichIndicators } from './jobs/enrichIndicators.js';
 import { predictionValidation } from './jobs/predictionValidation.js';
+import { runAutomlPredictionJobs } from './jobs/runAutomlPredictionJobs.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8000;
 
@@ -20,7 +21,77 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 8000;
 async function main() {
   await connectDb();
 
-  let timers = {};
+  let timers = { _automlRunning: new Map() };
+
+  const runAutomlJob = async (label, fields) => {
+    if (!Array.isArray(fields) || fields.length === 0) return null;
+    const key = label || fields.join(',');
+    const runningMap = timers._automlRunning instanceof Map ? timers._automlRunning : new Map();
+    timers._automlRunning = runningMap;
+    if (runningMap.get(key)) {
+      console.log(`[automl] ${label} skipped – already running`);
+      return null;
+    }
+    runningMap.set(key, true);
+    try {
+      const summary = await runAutomlPredictionJobs({ fields });
+      console.log(
+        `[automl] ${label} summary: planned=${summary.jobsPlanned} success=${summary.jobsSucceeded} failed=${summary.jobsFailed}`
+      );
+      return summary;
+    } catch (err) {
+      console.warn(
+        `[automl] ${label} failed:`,
+        err && err.message ? err.message : err
+      );
+      return null;
+    } finally {
+      runningMap.set(key, false);
+    }
+  };
+
+  const startAutomlInterval = (timerKey, label, intervalMs, fields) => {
+    if (!intervalMs || intervalMs <= 0) return;
+    const runner = () => {
+      runAutomlJob(label, fields);
+    };
+    runner();
+    timers[timerKey] = setInterval(runner, intervalMs);
+  };
+
+  const scheduleAutomlMinutes = (timerKey, label, minutes, fields) => {
+    if (!Array.isArray(minutes) || !minutes.length) return;
+    const validMinutes = Array.from(
+      new Set(
+        minutes
+          .map((m) => Number(m))
+          .filter((m) => Number.isInteger(m) && m >= 0 && m < 60)
+      )
+    ).sort((a, b) => a - b);
+    if (!validMinutes.length) return;
+
+    const scheduleNext = () => {
+      const now = new Date();
+      const currentMinute = now.getMinutes();
+      let nextMinute = validMinutes.find((m) => m > currentMinute);
+      const nextRun = new Date(now);
+      if (nextMinute === undefined) {
+        nextMinute = validMinutes[0];
+        nextRun.setHours(nextRun.getHours() + 1);
+      }
+      nextRun.setMinutes(nextMinute, 0, 0);
+      const delay = Math.max(0, nextRun.getTime() - now.getTime());
+      timers[timerKey] = setTimeout(async () => {
+        try {
+          await runAutomlJob(label, fields);
+        } finally {
+          scheduleNext();
+        }
+      }, delay);
+    };
+
+    scheduleNext();
+  };
 
   const db = await getDb();
   try {
@@ -384,6 +455,16 @@ async function main() {
     console.warn('predictionValidation on startup failed:', e && e.message ? e.message : e);
   }
 
+  await runAutomlJob('automl:1d', ['1d_bars']);
+  startAutomlInterval(
+    'automl1mInterval',
+    'automl:1m+market_snapshots_1m',
+    180000,
+    ['1m_bars', 'market_snapshots_1m']
+  );
+  scheduleAutomlMinutes('automl1hTimeout', 'automl:1h', [1], ['1h_bars']);
+  scheduleAutomlMinutes('automl15mTimeout', 'automl:15m', [1, 16, 31, 46], ['15m_bars']);
+
   // Periodic refresh timers for positions, portfolio history, bars, quotes, trades, orders
   if (alpacaClient) {
     // Positions: every 15s (existing behavior)
@@ -492,7 +573,11 @@ async function main() {
   } catch (_) {}
 
   const schedules = [
-    { name: 'predictionValidation', interval_ms: 60000 }
+    { name: 'predictionValidation', interval_ms: 60000 },
+    { name: 'automl-1m+market_snapshots_1m', interval_ms: 180000 },
+    { name: 'automl-1h', cron: 'minute 1 each hour' },
+    { name: 'automl-15m', cron: 'minutes 1,16,31,46 each hour' },
+    { name: 'automl-1d', run: 'startup' }
   ];
 
   if (alpacaClient) {
@@ -547,6 +632,9 @@ async function main() {
       if (timers && timers.quotes) clearInterval(timers.quotes);
       if (timers && timers.trades) clearInterval(timers.trades);
       if (timers && timers.orders) clearInterval(timers.orders);
+      if (timers && timers.automl1mInterval) clearInterval(timers.automl1mInterval);
+      if (timers && timers.automl1hTimeout) clearTimeout(timers.automl1hTimeout);
+      if (timers && timers.automl15mTimeout) clearTimeout(timers.automl15mTimeout);
       if (timers && timers.activities) clearTimeout(timers.activities);
       if (timers && timers.predictionValidation) clearInterval(timers.predictionValidation);
       await closeDb();
