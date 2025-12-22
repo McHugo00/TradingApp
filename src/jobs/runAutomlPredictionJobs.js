@@ -55,6 +55,7 @@ function runAutomlProcess(pythonBin, collection, symbol) {
 
 export async function runAutomlPredictionJobs(options = {}) {
   const pythonBin = options.pythonBin || process.env.PYTHON_BIN || 'python';
+  const reuseConnection = options.reuseConnection === true;
 
   const normalizedFields = Array.isArray(options.fields)
     ? options.fields
@@ -90,7 +91,9 @@ export async function runAutomlPredictionJobs(options = {}) {
     };
   }
 
-  await connectDb();
+  if (!reuseConnection) {
+    await connectDb();
+  }
   try {
     const db = await getDb();
     const projection = { symbol: 1 };
@@ -154,10 +157,12 @@ export async function runAutomlPredictionJobs(options = {}) {
       targetFields: targets.map((t) => t.field)
     };
   } finally {
-    try {
-      await closeDb();
-    } catch (err) {
-      console.warn('[automl] Failed to close DB connection:', err);
+    if (!reuseConnection) {
+      try {
+        await closeDb();
+      } catch (err) {
+        console.warn('[automl] Failed to close DB connection:', err);
+      }
     }
   }
 }

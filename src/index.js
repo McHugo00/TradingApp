@@ -34,7 +34,7 @@ async function main() {
     }
     runningMap.set(key, true);
     try {
-      const summary = await runAutomlPredictionJobs({ fields });
+      const summary = await runAutomlPredictionJobs({ fields, reuseConnection: true });
       console.log(
         `[automl] ${label} summary: planned=${summary.jobsPlanned} success=${summary.jobsSucceeded} failed=${summary.jobsFailed}`
       );
